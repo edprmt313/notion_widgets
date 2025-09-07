@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Unequal Hours Clock — unified gray lines & front helpers</title>
+<script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --fg:#e8eaee; --muted:#9aa0a6;
+    --day:#2a9d8f; --night:#264653; --hand:#e76f51; --ring:#3a3f44;
+    --eq:#8c99a6;                 /* equinoctial guide */
+    --season: rgba(255,183,3,0.35);/* season ring */
+
+    /* ★ unified gray for lines */
+    --line:#bbb;                  /* common gray for helper & boundaries */
+    --line-w-helper:0.6;          /* thickness: hourly helpers */
+    --line-w-cut:0.6;             /* thickness: koku boundary lines */
+    --line-op-helper:0.2;         /* opacity: hourly helpers */
+    --line-op-cut:0.6;            /* opacity: koku boundaries */
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Inter,Meiryo,sans-serif;}
+  .wrap{display:grid;place-items:center;height:100%;padding:10px;box-sizing:border-box;}
+  .panel{position:relative;max-width:720px;width:100%;aspect-ratio:1/1; padding-bottom:86px;}
+  svg{width:100%;height:100%;display:block}
+  .hud{position:absolute;left:0;right:0;bottom:-6px; display:flex; flex-wrap:wrap; gap:.6rem .9rem; justify-content:center; align-items:center;
+       padding:.6rem .8rem; color:var(--muted); font-size:1.05rem; line-height:1.2;}
+  .hud strong{color:var(--fg); font-weight:800;}
+  .gear{position:absolute;top:.6rem;right:.6rem;background:#1b1f24;border:1px solid #2b3036;border-radius:.7rem;padding:.4rem .6rem;cursor:pointer;color:var(--muted);font-size:.95rem}
+  .gear:hover{color:var(--fg);border-color:#3b4148}
+  .badge{display:inline-flex;align-items:center;gap:.35rem;padding:.2rem .45rem;border:1px solid #30353c;border-radius:.5rem;font-size:.9rem;color:var(--muted);background:#14181e}
+  .tz{display:inline-flex;align-items:center;gap:.4rem}
+  .tz select,.tz input{background:#161a1f;border:1px solid #2c3138;color:var(--fg);border-radius:.5rem;padding:.35rem .5rem;font-size:.95rem}
+  .tz input[disabled]{opacity:.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel">
+    <button class="gear" id="openSettings">⚙ Location</button>
+
+    <svg id="clock" viewBox="0 0 400 400" aria-label="Unequal Hours Clock">
+      <defs>
+        <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="1.2" stdDeviation="1.2" flood-color="#000" flood-opacity=".55"/>
+        </filter>
+      </defs>
+
+      <!-- guide circles (outer=summer solstice / inner=winter solstice) -->
+      <circle cx="200" cy="200" r="180" fill="none" stroke="var(--ring)" stroke-width="2"/>
+      <circle cx="200" cy="200" r="90"  fill="none" stroke="var(--ring)" stroke-width="2"/>
+
+      <!-- hour labels 0–23 (large) -->
+      <g id="ticks"></g>
+
+      <!-- envelope ribbons (summer↔equinox↔winter) + koku boundaries (unified gray) -->
+      <g id="envelopeRibbons" filter="url(#shadow)"></g>
+
+      <!-- today's seasonal ring (between outer & inner) -->
+      <g id="seasonBand"></g>
+
+      <!-- equinoctial guide -->
+      <g id="eqline"></g>
+
+      <!-- ★ move helpers to FRONT of ribbons/season: easier to see -->
+      <g id="hourHelpers" style="pointer-events:none"></g>
+
+      <!-- centered date (below center to avoid overlap) -->
+      <text id="dateCenter" x="200" y="225" text-anchor="middle" font-size="16.5" fill="#e8eaee"></text>
+
+      <!-- time hand -->
+      <g id="hand" stroke-linecap="round" filter="url(#shadow)"></g>
+    </svg>
+
+    <div class="hud" id="hud">
+      <span class="badge" id="locBadge">Location: —</span>
+      <span>|</span>
+      <span>Sunrise <strong id="sr">--:--</strong></span>
+      <span>/</span>
+      <span>Sunset <strong id="ss">--:--</strong></span>
+      <span>|</span>
+      <span>Now <strong id="now">--:--:--</strong></span>
+      <span>|</span>
+      <span class="tz">
+        TZ:
+        <select id="tzSelect">
+          <option value="local">Local</option>
+          <option value="JST">JST (UTC+9)</option>
+          <option value="UTC">UTC</option>
+          <option value="custom">Custom (UTC±h)</option>
+        </select>
+        <input id="tzOffset" type="number" step="0.25" value="0" title="UTC±h" disabled>
+      </span>
+    </div>
+  </div>
+</div>
+
+<dialog id="settings">
+  <form method="dialog">
+    <h3 style="margin:.2rem 0 .4rem">Location Settings</h3>
+    <p style="margin:0 0 .6rem;font-size:.9rem;color:#9aa0a6">Enter latitude and longitude (e.g., 35.681236, 139.767125), or use device location.</p>
+    <div style="display:flex;gap:.6rem">
+      <div><label>Latitude (lat)</label><input id="latInput" type="number" step="0.000001" placeholder="35.681236"></div>
+      <div><label>Longitude (lng)</label><input id="lngInput" type="number" step="0.000001" placeholder="139.767125"></div>
+    </div>
+    <button class="btn" id="saveBtn" style="margin-top:.8rem;width:100%;padding:.6rem;border-radius:.6rem;border:1px solid #2c3138;background:#1b1f24;color:var(--fg);cursor:pointer">Save</button>
+    <button class="btn" style="margin-top:.5rem;background:#0f1216;width:100%" id="tryGeo">Use device location</button>
+  </form>
+</dialog>
+
+<script>
+/* ===== utils ===== */
+const $=s=>document.querySelector(s);
+const pad=n=>n.toString().padStart(2,'0');
+const fmt=d=>`${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const fmtSec=d=>`${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const Q=new URLSearchParams(location.search);
+const TAU=Math.PI*2;
+
+const CX=200, CY=200;
+const R_OUTER=180, R_INNER=90, R_EQ=(R_OUTER+R_INNER)/2;
+const SEASON_RING_THICKNESS=12;
+
+/* ===== hour labels 0–23 (large) ===== */
+(function drawTicks(){
+  const g=$("#ticks");
+  const rTickIn=R_OUTER-8, rTickOut=R_OUTER;
+  const rLabel=192;
+  let html="";
+  for(let h=0;h<24;h++){
+    const a=(h/24)*TAU - Math.PI/2;
+    const x1=CX+rTickIn*Math.cos(a), y1=CY+rTickIn*Math.sin(a);
+    const x2=CX+rTickOut*Math.cos(a),y2=CY+rTickOut*Math.sin(a);
+    html+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#7a8188" stroke-width="${h%6===0?2:1}"/>`;
+    const tx=CX+rLabel*Math.cos(a), ty=CY+rLabel*Math.sin(a)+6;
+    html+=`<text x="${tx}" y="${ty}" text-anchor="middle" font-size="17.5" fill="#c7cdd2">${h}</text>`;
+  }
+  g.innerHTML=html;
+})();
+
+/* ===== hourly radials (24) — FRONT & unified gray ===== */
+function drawHelpers(){
+  const g=$("#hourHelpers");
+  let html="";
+  for(let h=0; h<24; h++){
+    const a=(h/24)*TAU - Math.PI/2;
+    const r1=R_INNER+1, r2=R_OUTER-1;
+    const x1=CX+r1*Math.cos(a), y1=CY+r1*Math.sin(a);
+    const x2=CX+r2*Math.cos(a), y2=CY+r2*Math.sin(a);
+    html+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+      stroke="var(--line)" stroke-opacity="var(--line-op-helper)" stroke-width="var(--line-w-helper)"/>`;
+  }
+  g.innerHTML=html;
+}
+
+/* ===== geometry ===== */
+function timeToAngle(dayStart,t){
+  const ms=t-dayStart; const frac=(ms%86400000)/86400000;
+  return frac*TAU - Math.PI/2;
+}
+function unwrap(base,ang){let d=ang-base;while(d>Math.PI)d-=TAU;while(d<-Math.PI)d+=TAU;return base+d;}
+function quadAngle(aS,aE,aW,t){const e=unwrap(aS,aE), w=unwrap(e,aW);return (1-t)*(1-t)*aS+2*(1-t)*t*e+t*t*w;}
+function arcPath(rO,rI,a1,a2){
+  const sweep=(((a2-a1)%TAU)+TAU)%TAU, large=sweep>Math.PI?1:0;
+  const x1o=CX+rO*Math.cos(a1), y1o=CY+rO*Math.sin(a1);
+  const x2o=CX+rO*Math.cos(a2), y2o=CY+rO*Math.sin(a2);
+  const x2i=CX+rI*Math.cos(a2), y2i=CY+rI*Math.sin(a2);
+  const x1i=CX+rI*Math.cos(a1), y1i=CY+rI*Math.sin(a1);
+  return `M ${x1o} ${y1o} A ${rO} ${rO} 0 ${large} 1 ${x2o} ${y2o}
+          L ${x2i} ${y2i} A ${rI} ${rI} 0 ${large} 0 ${x1i} ${y1i} Z`;
+}
+
+/* ===== unequal-hour boundaries for a given date ===== */
+function kokuBoundariesForDate(date,lat,lng){
+  const day=new Date(date.getFullYear(),date.getMonth(),date.getDate());
+  const yday=new Date(+day-86400000), tmr=new Date(+day+86400000);
+  const T=SunCalc.getTimes(day,lat,lng), Ty=SunCalc.getTimes(yday,lat,lng), Tn=SunCalc.getTimes(tmr,lat,lng);
+  const sunrise=T.sunrise, sunset=T.sunset, lastSunset=Ty.sunset, nextSunrise=Tn.sunrise;
+  const dayLen=sunset-sunrise, nightPrev=sunrise-lastSunset, nightNext=nextSunrise-sunset;
+  const starts=[];
+  for(let i=0;i<=6;i++) starts.push(new Date(+lastSunset+i*nightPrev/6));
+  for(let i=1;i<=6;i++) starts.push(new Date(+sunrise   +i*dayLen/6));
+  for(let i=1;i<=6;i++) starts.push(new Date(+sunset    +i*nightNext/6));
+  return starts.map(t=>timeToAngle(day,t)); // 19 angles
+}
+
+/* ===== envelope ribbons + unified-gray koku boundaries ===== */
+function renderEnvelope(lat,lng, now=new Date()){
+  const y=now.getFullYear();
+  const angS=kokuBoundariesForDate(new Date(y,5,21),lat,lng);  // summer
+  const angE=kokuBoundariesForDate(new Date(y,2,20),lat,lng);  // equinox
+  const angW=kokuBoundariesForDate(new Date(y,11,21),lat,lng); // winter
+
+  const g=$("#envelopeRibbons");
+  let html="";
+  const colors=Array.from({length:18},(_,k)=>(k>=6&&k<12)?'var(--day)':'var(--night)');
+  for(let k=0;k<18;k++){
+    const aS1=angS[k],aS2=angS[k+1],aE1=angE[k],aE2=angE[k+1],aW1=angW[k],aW2=angW[k+1];
+    const xS1=CX+R_OUTER*Math.cos(aS1), yS1=CY+R_OUTER*Math.sin(aS1);
+    const xS2=CX+R_OUTER*Math.cos(aS2), yS2=CY+R_OUTER*Math.sin(aS2);
+    const xE1=CX+R_EQ*Math.cos(aE1), yE1=CY+R_EQ*Math.sin(aE1);
+    const xE2=CX+R_EQ*Math.cos(aE2), yE2=CY+R_EQ*Math.sin(aE2);
+    const xW1=CX+R_INNER*Math.cos(aW1), yW1=CY+R_INNER*Math.sin(aW1);
+    const xW2=CX+R_INNER*Math.cos(aW2), yW2=CY+R_INNER*Math.sin(aW2);
+    const largeO=((((aS2-aS1)%TAU)+TAU)%TAU>Math.PI)?1:0;
+    const largeI=((((aW2-aW1)%TAU)+TAU)%TAU>Math.PI)?1:0;
+    const d=`M ${xS1} ${yS1} A ${R_OUTER} ${R_OUTER} 0 ${largeO} 1 ${xS2} ${yS2}
+             Q ${xE2} ${yE2} ${xW2} ${yW2}
+             A ${R_INNER} ${R_INNER} 0 ${largeI} 0 ${xW1} ${yW1}
+             Q ${xE1} ${yE1} ${xS1} ${yS1} Z`;
+    html+=`<path d="${d}" fill="${colors[k]}" opacity=".9"/>`;
+  }
+  // unified-gray boundary lines (koku edges)
+  const lines=[];
+  for(let k=1;k<angS.length-1;k++){
+    const aS=angS[k],aE=angE[k],aW=angW[k];
+    const xS=CX+R_OUTER*Math.cos(aS), yS=CY+R_OUTER*Math.sin(aS);
+    const xE=CX+R_EQ*Math.cos(aE),    yE=CY+R_EQ*Math.sin(aE);
+    const xW=CX+R_INNER*Math.cos(aW), yW=CY+R_INNER*Math.sin(aW);
+    lines.push(`<path d="M ${xS} ${yS} Q ${xE} ${yE} ${xW} ${yW}"
+      stroke="var(--line)" stroke-opacity="var(--line-op-cut)" stroke-width="var(--line-w-cut)" fill="none"/>`);
+  }
+  g.innerHTML=html+lines.join("");
+
+  // equinoctial guide
+  $("#eqline").innerHTML=`<circle cx="${CX}" cy="${CY}" r="${R_EQ}" fill="none"
+    stroke="#8c99a6" stroke-opacity="0.9" stroke-dasharray="1 1" stroke-width="0.6"/>`;
+
+  return {angS,angE,angW};
+}
+
+/* ===== season ring (always between summer & winter) ===== */
+function dayLength(date,lat,lng){const t=SunCalc.getTimes(date,lat,lng);return t.sunset-t.sunrise;}
+function seasonFactor(lat,lng,today=new Date()){
+  const y=today.getFullYear();
+  const dS=dayLength(new Date(y,5,21),lat,lng);
+  const dW=dayLength(new Date(y,11,21),lat,lng);
+  const dT=dayLength(new Date(today.getFullYear(),today.getMonth(),today.getDate()),lat,lng);
+  return Math.min(1,Math.max(0,(dT-dW)/Math.max(1,dS-dW))); // 0=winter, 1=summer
+}
+function renderSeasonRing(lat,lng, now){
+  const t = seasonFactor(lat,lng, now);
+  const r = R_INNER + t*(R_OUTER - R_INNER);
+  $("#seasonBand").innerHTML =
+    `<circle cx="${CX}" cy="${CY}" r="${r}" fill="none" stroke="var(--season)" stroke-width="${SEASON_RING_THICKNESS}" />`;
+}
+
+/* ===== hand (uniform hours; TZ selectable) ===== */
+function setHand(now){
+  const dayStart=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  const a=timeToAngle(dayStart, now);
+  const L=R_OUTER-18; const x=CX+L*Math.cos(a), y=CY+L*Math.sin(a);
+  $("#hand").innerHTML=`<line x1="${CX}" y1="${CY}" x2="${x}" y2="${y}" stroke="var(--hand)" stroke-width="4"/><circle cx="${CX}" cy="${CY}" r="5" fill="var(--hand)"/>`;
+}
+
+/* ===== time zone handling ===== */
+const tzSel = $("#tzSelect");
+const tzOff = $("#tzOffset");
+function saveTZ(){ localStorage.setItem("unequalClock.tz", tzSel.value); localStorage.setItem("unequalClock.tzOff", tzOff.value); }
+function loadTZ(){
+  const tv = localStorage.getItem("unequalClock.tz") || "local";
+  const ov = localStorage.getItem("unequalClock.tzOff") || "0";
+  tzSel.value = tv; tzOff.value = ov; tzOff.disabled = (tv!=="custom");
+}
+tzSel.addEventListener("change", ()=>{ tzOff.disabled = (tzSel.value!=="custom"); saveTZ(); });
+tzOff.addEventListener("input", saveTZ);
+function getNowByTZ(){
+  const now = new Date();
+  const utc = new Date(now.getTime() + now.getTimezoneOffset()*60000);
+  const sel = tzSel.value;
+  if(sel==="UTC") return utc;
+  if(sel==="JST") return new Date(utc.getTime()+9*3600*1000);
+  if(sel==="custom"){ const off=parseFloat(tzOff.value||0); return new Date(utc.getTime()+off*3600*1000); }
+  return now; // Local
+}
+
+/* ===== location handling ===== */
+function setLocBadge(lat,lng){ $("#locBadge").textContent = `Location: ${lat.toFixed(4)}, ${lng.toFixed(4)}`; }
+function parseLatLng(){
+  const qlat = parseFloat(Q.get('lat')), qlng = parseFloat(Q.get('lng'));
+  if(!Number.isNaN(qlat) && !Number.isNaN(qlng)) return {lat:qlat,lng:qlng,from:'query'};
+  const mem = localStorage.getItem('unequalClock.loc');
+  if(mem){ try{ const o=JSON.parse(mem); return {...o,from:'local'} }catch{} }
+  return null;
+}
+function saveLatLng(lat,lng){ localStorage.setItem('unequalClock.loc', JSON.stringify({lat,lng})); setLocBadge(lat,lng); }
+const settings=$("#settings");
+$("#openSettings").addEventListener("click", ()=> {
+  const loc = parseLatLng() || {lat:35.681236,lng:139.767125};
+  $("#latInput").value = loc.lat; $("#lngInput").value = loc.lng; settings.showModal();
+});
+$("#saveBtn").addEventListener("click", (e)=>{
+  e.preventDefault();
+  const lat = parseFloat($("#latInput").value), lng = parseFloat($("#lngInput").value);
+  if(!Number.isNaN(lat) && !Number.isNaN(lng)){ saveLatLng(lat,lng); settings.close(); init(lat,lng,true); }
+});
+$("#tryGeo").addEventListener("click", (e)=>{
+  e.preventDefault();
+  if(!navigator.geolocation){ alert("Geolocation is not available on this device."); return; }
+  navigator.geolocation.getCurrentPosition(pos=>{
+    const {latitude:lat, longitude:lng} = pos.coords;
+    $("#latInput").value = lat.toFixed(6); $("#lngInput").value = lng.toFixed(6);
+  }, _=> alert("Failed to get device location."));
+});
+
+/* ===== main ===== */
+function renderAll(lat,lng){
+  const today = new Date();
+  const tT = SunCalc.getTimes(new Date(today.getFullYear(), today.getMonth(), today.getDate()), lat, lng);
+  $("#sr").textContent = fmt(tT.sunrise); $("#ss").textContent = fmt(tT.sunset);
+
+  renderEnvelope(lat,lng,today);
+  renderSeasonRing(lat,lng,today);
+  drawHelpers(); // ★ helpers after ribbons/season so they are in front
+}
+function init(lat,lng,redrawOnly=false){
+  setLocBadge(lat,lng); loadTZ();
+  renderAll(lat,lng);
+
+  function tick(){
+    const now = getNowByTZ();
+    $("#now").textContent = fmtSec(now);
+    $("#dateCenter").textContent = now.toLocaleDateString("en-US",{weekday:"short", month:"short", day:"numeric"});
+    setHand(now);
+  }
+  tick();
+  if(!redrawOnly){
+    setInterval(tick, 1000);
+    setInterval(()=>renderAll(lat,lng), 5*60*1000);
+  }
+}
+
+/* bootstrap */
+(function bootstrap(){
+  loadTZ();
+  let loc = parseLatLng();
+  if(!loc){
+    loc = {lat:35.681236,lng:139.767125};
+    if(location.protocol==='https:' && navigator.geolocation){
+      navigator.geolocation.getCurrentPosition(p=>{
+        const {latitude:lat, longitude:lng} = p.coords;
+        saveLatLng(lat,lng); init(lat,lng);
+      }, _=> init(loc.lat, loc.lng));
+      return;
+    }
+  }
+  if(loc.from!=='query') saveLatLng(loc.lat, loc.lng);
+  init(loc.lat, loc.lng);
+})();
+</script>
+</body>
+</html>
